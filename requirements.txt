@@ -1,2 +1,9 @@
 Flask==2.3.2
 flask-socketio==5.3.3
+flask
+flask-socketio
+flask-cors
+eventlet
+gunicorn
+joblib
+pandas
