@@ -1,4 +1,4 @@
-import os, sqlite3, datetime
+import os, sqlite3, datetime, json
 from flask import Flask, render_template, request, g, jsonify
 from flask_socketio import SocketIO, emit, join_room
 from flask_cors import CORS
@@ -6,29 +6,17 @@ import pandas as pd
 import joblib
 
 # -------------------------
-# SocketIO async setup
+# Flask & SocketIO setup
 # -------------------------
-# Try gevent first (works with Python 3.12+)
-async_mode = 'threading'
-try:
-    from gevent import monkey
-    monkey.patch_all()
-    async_mode = 'gevent'
-    print("⚙️ Using gevent async mode")
-except Exception as e:
-    print("⚠️ gevent not found, falling back to threading:", e)
-    async_mode = 'threading'
+async_mode = "gevent"  # Use gevent, not eventlet
 
-# -------------------------
-# Flask setup
-# -------------------------
-DB_PATH = os.path.join(os.path.dirname(__file__), 'phishing_logs.db')
+DB_PATH = os.path.join(os.path.dirname(__file__), "phishing_logs.db")
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "rf_model.joblib")
 
-app = Flask(__name__, static_folder='static', template_folder='templates')
+app = Flask(__name__, static_folder="static", template_folder="templates")
 CORS(app)
-app.config['SECRET_KEY'] = os.environ.get("SECRET_KEY", "phishguard-final-secret")
-socketio = SocketIO(app, cors_allowed_origins='*', async_mode=async_mode)
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "phishguard-final-secret")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode=async_mode)
 
 # -------------------------
 # Load trained model
@@ -41,76 +29,85 @@ else:
     print("⚠️ Model file not found! Run train_model.py first.")
 
 # -------------------------
-# Database utilities
+# Database functions
 # -------------------------
 def get_db():
-    db = getattr(g, '_database', None)
+    db = getattr(g, "_database", None)
     if db is None:
         db = g._database = sqlite3.connect(DB_PATH, check_same_thread=False)
-        db.execute('''CREATE TABLE IF NOT EXISTS logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            url TEXT,
-            homoglyph_score REAL,
-            behavior_score REAL,
-            phishing_score REAL,
-            risk_level TEXT,
-            ts DATETIME DEFAULT CURRENT_TIMESTAMP
-        )''')
-        db.execute('''CREATE TABLE IF NOT EXISTS alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            url TEXT,
-            level TEXT,
-            message TEXT,
-            ts DATETIME DEFAULT CURRENT_TIMESTAMP
-        )''')
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                url TEXT,
+                homoglyph_score REAL,
+                behavior_score REAL,
+                phishing_score REAL,
+                risk_level TEXT,
+                ts DATETIME DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT,
+                url TEXT,
+                level TEXT,
+                message TEXT,
+                ts DATETIME DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
         db.commit()
     return db
 
 
 @app.teardown_appcontext
 def close_db(exc):
-    db = getattr(g, '_database', None)
+    db = getattr(g, "_database", None)
     if db is not None:
         db.close()
-
 
 # -------------------------
 # Routes
 # -------------------------
-@app.route('/')
+@app.route("/")
 def home():
     return "✅ PhishGuard API is running!"
 
 
-@app.route('/admin')
+@app.route("/admin")
 def admin():
-    return render_template('admin.html')
+    return render_template("admin.html")
 
 
-@app.route('/admin_data')
+@app.route("/admin_data")
 def admin_data():
     db = get_db()
-    cur = db.execute("SELECT id, session_id, url, homoglyph_score, behavior_score, phishing_score, risk_level, ts FROM logs ORDER BY id DESC LIMIT 500")
+    cur = db.execute(
+        "SELECT id, session_id, url, homoglyph_score, behavior_score, phishing_score, risk_level, ts "
+        "FROM logs ORDER BY id DESC LIMIT 500"
+    )
     rows = cur.fetchall()
-    cur2 = db.execute("SELECT id, session_id, url, level, message, ts FROM alerts ORDER BY id DESC LIMIT 500")
+    cur2 = db.execute(
+        "SELECT id, session_id, url, level, message, ts FROM alerts ORDER BY id DESC LIMIT 500"
+    )
     alerts = cur2.fetchall()
-    return jsonify({"logs": [list(r) for r in rows], "alerts": [list(a) for a in alerts]})
-
+    return jsonify(
+        {"logs": [list(r) for r in rows], "alerts": [list(a) for a in alerts]}
+    )
 
 # -------------------------
 # AI-Powered Phishing Detection API
 # -------------------------
-@app.route('/api/check', methods=['POST'])
+@app.route("/api/check", methods=["POST"])
 def api_check():
     data = request.json or {}
-    url = data.get('url', '')
-    behavior = data.get('behavior', {})
+    url = data.get("url", "")
+    behavior = data.get("behavior", {})
 
-    trusted_path = os.path.join(os.path.dirname(__file__), 'trusted_domains.txt')
+    trusted_path = os.path.join(os.path.dirname(__file__), "trusted_domains.txt")
     try:
-        with open(trusted_path, 'r', encoding='utf-8') as f:
+        with open(trusted_path, "r", encoding="utf-8") as f:
             trusted = [x.strip() for x in f if x.strip()]
     except Exception:
         trusted = []
@@ -123,9 +120,10 @@ def api_check():
 
     if model:
         from modules.features import extract_features_from_url
+
         trusted_domains_list = []
         try:
-            with open(trusted_path, 'r', encoding='utf-8') as f:
+            with open(trusted_path, "r", encoding="utf-8") as f:
                 trusted_domains_list = [x.strip() for x in f if x.strip()]
         except Exception:
             trusted_domains_list = []
@@ -133,68 +131,100 @@ def api_check():
         features = extract_features_from_url(url, trusted_domains=trusted_domains_list)
         feature_df = pd.DataFrame([features])
 
-        prediction = int(model.predict(feature_df)[0])
-        probability = float(model.predict_proba(feature_df)[0][1])
+        # ✅ Robust predict_proba fallback
+        try:
+            proba = model.predict_proba(feature_df)[0]
+            if len(proba) == 1:
+                single_class = model.classes_[0]
+                if single_class == 1:
+                    probability = float(proba[0])
+                else:
+                    probability = 1.0 - float(proba[0])
+            else:
+                probability = float(proba[1])
+        except Exception as e:
+            print(f"[WARN] predict_proba error: {e}")
+            probability = 0.5
+
         phishing_score = round(probability * 100, 2)
+        prediction = int(model.predict(feature_df)[0])
+        print(f"[DEBUG] ML prediction for {url}: {phishing_score}% (label={prediction})")
+
     else:
         phishing_score = round(0.7 * homoglyph_score + 0.3 * behavior_score, 2)
         prediction = 1 if phishing_score >= 50 else 0
 
     if phishing_score < 30:
-        risk, action = 'Low', 'Allow'
+        risk, action = "Low", "Allow"
     elif phishing_score < 70:
-        risk, action = 'Medium', 'Warn'
+        risk, action = "Medium", "Warn"
     else:
-        risk, action = 'High', 'Block'
+        risk, action = "High", "Block"
 
     db = get_db()
     db.execute(
-        "INSERT INTO logs (session_id, url, homoglyph_score, behavior_score, phishing_score, risk_level, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ('static', url, homoglyph_score, behavior_score, phishing_score, risk, datetime.datetime.utcnow().isoformat())
+        "INSERT INTO logs (session_id, url, homoglyph_score, behavior_score, phishing_score, risk_level, ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "static",
+            url,
+            homoglyph_score,
+            behavior_score,
+            phishing_score,
+            risk,
+            datetime.datetime.utcnow().isoformat(),
+        ),
     )
     db.commit()
 
-    if risk in ('Medium', 'High'):
+    if risk in ("Medium", "High"):
         db.execute(
             "INSERT INTO alerts (session_id, url, level, message, ts) VALUES (?, ?, ?, ?, ?)",
-            ('static', url, risk, f'{risk} risk detected for {url}', datetime.datetime.utcnow().isoformat())
+            (
+                "static",
+                url,
+                risk,
+                f"{risk} risk detected for {url}",
+                datetime.datetime.utcnow().isoformat(),
+            ),
         )
         db.commit()
 
-    return jsonify({
-        'url': url,
-        'homoglyph_score': round(homoglyph_score, 2),
-        'behavior_score': round(behavior_score, 2),
-        'phishing_score': phishing_score,
-        'risk_level': risk,
-        'action': action
-    })
-
+    return jsonify(
+        {
+            "url": url,
+            "homoglyph_score": round(homoglyph_score, 2),
+            "behavior_score": round(behavior_score, 2),
+            "phishing_score": phishing_score,
+            "risk_level": risk,
+            "action": action,
+        }
+    )
 
 # -------------------------
-# SocketIO Real-Time Metrics
+# SocketIO Events
 # -------------------------
-@socketio.on('connect')
+@socketio.on("connect")
 def on_connect():
-    emit('connected', {'msg': 'connected', 'session_id': request.sid})
+    emit("connected", {"msg": "connected", "session_id": request.sid})
 
 
-@socketio.on('join')
+@socketio.on("join")
 def on_join(data):
-    room = data.get('room') or request.sid
+    room = data.get("room") or request.sid
     join_room(room)
-    emit('joined', {'room': room}, room=request.sid)
+    emit("joined", {"room": room}, room=request.sid)
 
 
-@socketio.on('metrics')
+@socketio.on("metrics")
 def on_metrics(data):
-    session_id = data.get('session_id') or request.sid
-    url = data.get('url', '')
-    behavior = data.get('behavior', {})
+    session_id = data.get("session_id") or request.sid
+    url = data.get("url", "")
+    behavior = data.get("behavior", {})
 
-    trusted_path = os.path.join(os.path.dirname(__file__), 'trusted_domains.txt')
+    trusted_path = os.path.join(os.path.dirname(__file__), "trusted_domains.txt")
     try:
-        with open(trusted_path, 'r', encoding='utf-8') as f:
+        with open(trusted_path, "r", encoding="utf-8") as f:
             trusted = [x.strip() for x in f if x.strip()]
     except Exception:
         trusted = []
@@ -209,54 +239,86 @@ def on_metrics(data):
         from modules.features import extract_features_from_url
         trusted_domains_list = []
         try:
-            with open(trusted_path, 'r', encoding='utf-8') as f:
+            with open(trusted_path, "r", encoding="utf-8") as f:
                 trusted_domains_list = [x.strip() for x in f if x.strip()]
         except Exception:
             trusted_domains_list = []
 
         features = extract_features_from_url(url, trusted_domains=trusted_domains_list)
         feature_df = pd.DataFrame([features])
-        probability = float(model.predict_proba(feature_df)[0][1])
+
+        try:
+            proba = model.predict_proba(feature_df)[0]
+            if len(proba) == 1:
+                single_class = model.classes_[0]
+                if single_class == 1:
+                    probability = float(proba[0])
+                else:
+                    probability = 1.0 - float(proba[0])
+            else:
+                probability = float(proba[1])
+        except Exception as e:
+            print(f"[WARN] predict_proba error (socket): {e}")
+            probability = 0.5
+
         phishing_score = round(probability * 100, 2)
         print(f"[DEBUG] ML prediction (socket) for {url}: {phishing_score}%")
+
     else:
         phishing_score = round(0.7 * homoglyph_score + 0.3 * behavior_score, 2)
 
     if phishing_score < 30:
-        risk = 'Low'
+        risk = "Low"
     elif phishing_score < 70:
-        risk = 'Medium'
+        risk = "Medium"
     else:
-        risk = 'High'
+        risk = "High"
 
     db = get_db()
     db.execute(
-        "INSERT INTO logs (session_id, url, homoglyph_score, behavior_score, phishing_score, risk_level, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (session_id, url, homoglyph_score, behavior_score, phishing_score, risk, datetime.datetime.utcnow().isoformat())
+        "INSERT INTO logs (session_id, url, homoglyph_score, behavior_score, phishing_score, risk_level, ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            session_id,
+            url,
+            homoglyph_score,
+            behavior_score,
+            phishing_score,
+            risk,
+            datetime.datetime.utcnow().isoformat(),
+        ),
     )
     db.commit()
 
-    if risk in ('Medium', 'High'):
+    if risk in ("Medium", "High"):
         db.execute(
             "INSERT INTO alerts (session_id, url, level, message, ts) VALUES (?, ?, ?, ?, ?)",
-            (session_id, url, risk, f'{risk} risk detected for {url}', datetime.datetime.utcnow().isoformat())
+            (
+                session_id,
+                url,
+                risk,
+                f"{risk} risk detected for {url}",
+                datetime.datetime.utcnow().isoformat(),
+            ),
         )
         db.commit()
 
-    emit('update', {
-        'session_id': session_id,
-        'url': url,
-        'homoglyph_score': round(homoglyph_score, 2),
-        'behavior_score': round(behavior_score, 2),
-        'phishing_score': phishing_score,
-        'risk_level': risk
-    }, room=session_id)
-
+    emit(
+        {
+            "session_id": session_id,
+            "url": url,
+            "homoglyph_score": round(homoglyph_score, 2),
+            "behavior_score": round(behavior_score, 2),
+            "phishing_score": phishing_score,
+            "risk_level": risk,
+        },
+        room=session_id,
+    )
 
 # -------------------------
-# Run App
+# Run App (local & Render)
 # -------------------------
-if __name__ == '__main__':
-    print('Async mode selected:', async_mode)
+if __name__ == "__main__":
+    print("⚙️ Using gevent async mode")
     port = int(os.environ.get("PORT", 5000))
-    socketio.run(app, host='0.0.0.0', port=port)
+    socketio.run(app, host="0.0.0.0", port=port)
