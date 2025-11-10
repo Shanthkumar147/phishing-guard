@@ -1,6 +1,23 @@
+# Ignore dependencies and build artifacts
 node_modules/
-build/
-dist/
+android/.gradle/
+android/.idea/
+android/build/
+ios/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
 .DS_Store
+.env
 *.log
-android/app/build/
+
+# Capacitor and build output
+web/dist/
+build/
+capacitor.config.ts
+
+# Python virtual environments
+venv/
+.env/
