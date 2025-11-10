@@ -116,6 +116,8 @@ def api_check():
         prediction = model.predict(feature_df)[0]
         probability = model.predict_proba(feature_df)[0][1]
         phishing_score = round(probability * 100, 2)
+        print(f"[DEBUG] ML prediction for {url}: {phishing_score}% (label={prediction})")
+
     else:
         phishing_score = round(0.7 * homoglyph_score + 0.3 * behavior_score, 2)
         prediction = 1 if phishing_score >= 50 else 0
