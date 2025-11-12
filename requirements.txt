@@ -8,3 +8,4 @@ idna
 python-whois
 gevent
 requests
+gunicorn
